@@ -1,0 +1,5 @@
+pywinauto
+pywin32
+psutil
+pyperclip
+pillow

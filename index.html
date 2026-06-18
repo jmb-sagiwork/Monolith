@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Monolith</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #53606d;
+      --line: #d8dde3;
+      --accent: #176b87;
+      --accent-dark: #0e5066;
+      --paper: #f7f8fa;
+      --white: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+    header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--white);
+      font-weight: 700;
+    }
+    .hero {
+      display: grid;
+      align-content: center;
+      gap: 26px;
+      max-width: 940px;
+      width: min(100%, 940px);
+      margin: 0 auto;
+      padding: 56px 24px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(42px, 7vw, 76px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+    p {
+      max-width: 700px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1.5;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 18px;
+      border-radius: 6px;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    a.button:hover { background: var(--accent-dark); }
+    a.secondary {
+      background: var(--white);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    a.secondary:hover { background: #eef2f5; }
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      border-top: 1px solid var(--line);
+      padding-top: 22px;
+    }
+    .fact {
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .fact strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+    footer {
+      padding: 16px 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      background: var(--white);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>Monolith</header>
+    <section class="hero">
+      <h1>Monolith</h1>
+      <p>Legacy emulator handshake tester for Windows. Detect emulator windows, profile files, HLLAPI candidates, UI Automation availability, and export a local scan report.</p>
+      <div class="actions">
+        <a class="button" href="https://github.com/jmb-sagiwork/Monolith/raw/refs/heads/main/dist/Monolith.exe">Download Monolith.exe</a>
+        <a class="button secondary" href="https://github.com/jmb-sagiwork/Monolith">View Repository</a>
+      </div>
+      <div class="facts">
+        <div class="fact"><strong>Read-only v1</strong><span>No login automation, no Enter key, no destructive input.</span></div>
+        <div class="fact"><strong>Tester GUI</strong><span>Tkinter desktop interface with logs and export.</span></div>
+        <div class="fact"><strong>Adapters</strong><span>HLLAPI/EHLLAPI, UIA, Win32 read, and clipboard probe.</span></div>
+      </div>
+    </section>
+    <footer>Windows executable: Monolith.exe</footer>
+  </main>
+</body>
+</html>
