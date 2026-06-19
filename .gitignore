@@ -5,3 +5,4 @@ build/
 .venv/
 output/logs/*.log
 output/reports/*.json
+output/handshakes/*/

@@ -1,149 +1,243 @@
 from __future__ import annotations
 
-import json
+import os
 import queue
 import threading
-from datetime import datetime
+import time
 from pathlib import Path
 from typing import Callable
 
-from monolith.core.adapters.clipboard_adapter import test_clipboard
-from monolith.core.adapters.hllapi_adapter import test_hllapi
-from monolith.core.adapters.uia_adapter import test_uia
-from monolith.core.adapters.win32_adapter import test_win32
+from monolith.adapters.desktop_uia_adapter import DesktopUIAAdapter
+from monolith.adapters.terminal_adapter import TERMINAL_KEYS, TerminalAdapter
+from monolith.adapters.website_playwright_adapter import WebsitePlaywrightAdapter
+from monolith.core.exporter import export_handshake
 from monolith.core.logger import AppLogger
-from monolith.core.models import AdapterResult, ScanResult, SessionProfile, TargetWindow
-from monolith.core.scanners.dll_scanner import probe_hllapi_dlls
-from monolith.core.scanners.process_scanner import likely_emulator_processes, scan_processes
-from monolith.core.scanners.profile_scanner import guess_profile, scan_profiles
-from monolith.core.scanners.window_scanner import is_likely_window, scan_windows
+from monolith.core.models import CapturedTarget, HandshakeRecipe, HandshakeStep, TargetWindow
+from monolith.core.step_manager import StepManager
 
 
 class MonolithController:
-    def __init__(self, root, view_callbacks: dict[str, Callable]) -> None:
+    def __init__(self, root, callbacks: dict[str, Callable]) -> None:
         self.root = root
-        self.callbacks = view_callbacks
+        self.callbacks = callbacks
         self.queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.logger = AppLogger(self._queue_log)
-        self.windows: list[TargetWindow] = []
-        self.profiles: list[SessionProfile] = []
-        self.processes: list[dict] = []
-        self.found_dlls: list[dict] = []
-        self.scan_result = ScanResult()
+        self.step_manager = StepManager()
+        self.target_type = "Terminal Emulator"
+        self.adapter_name = "Manual row/column guidance"
+        self.current_target: CapturedTarget | None = None
+        self.selected_window: TargetWindow | None = None
+        self.session_file = ""
+        self.website_url = ""
+        self.export_folder: Path | None = None
+        self.website = WebsitePlaywrightAdapter()
+        self.desktop = DesktopUIAAdapter()
+        self.terminal = TerminalAdapter()
+        self.desktop_windows: list[TargetWindow] = []
+        self.terminal_detection_done = False
 
     def start(self) -> None:
         self.root.after(100, self._drain_queue)
-        self.run_thread(self.light_discovery)
+        self.logger.info("Monolith V2 started.")
+        self.emit_state()
 
-    def run_thread(self, work: Callable[[], None]) -> None:
+    def set_target_type(self, target_type: str) -> None:
+        self.target_type = target_type
+        self.current_target = None
+        if target_type == "Website":
+            self.adapter_name = "Playwright"
+        elif target_type == "Desktop Application":
+            self.adapter_name = "UI Automation"
+        else:
+            self.adapter_name = "Manual row/column guidance"
+            self.terminal_detection_done = False
+        self.logger.info(f"{target_type} mode selected.")
+        self.emit_state()
+
+    def open_website(self, url: str) -> None:
+        self.website_url = url.strip()
+        self._run(lambda: self._open_website(self.website_url))
+
+    def _open_website(self, url: str) -> None:
+        if not url:
+            self.logger.warn("Website URL is required.")
+            return
+        ok, message = self.website.open_browser(url)
+        self.logger.info(message) if ok else self.logger.error(message)
+        self.queue.put(("website_status", {"status": "Open" if ok else "Error", "url": self.website.current_url or url}))
+
+    def start_website_catch(self) -> None:
+        self._run(self._start_website_catch)
+
+    def _start_website_catch(self) -> None:
+        self.logger.info("Website catch mode started. Click an element in the controlled browser.")
+        try:
+            self.current_target = self.website.start_catch_mode()
+            self.logger.info("Website element captured.")
+            self.queue.put(("captured", self.current_target))
+        except Exception as exc:
+            self.logger.error(str(exc))
+
+    def stop_website_catch(self) -> None:
+        self.website.stop_catch_mode()
+        self.logger.info("Website catch mode stopped.")
+
+    def refresh_desktop_windows(self) -> None:
+        self._run(self._refresh_desktop_windows)
+
+    def _refresh_desktop_windows(self) -> None:
+        self.desktop_windows = self.desktop.list_windows()
+        if self.desktop_windows and self.selected_window is None:
+            self.selected_window = self.desktop_windows[0]
+        self.logger.info(f"Desktop windows found: {len(self.desktop_windows)}")
+        self.queue.put(("windows", self.desktop_windows))
+
+    def select_window(self, index: int) -> None:
+        if 0 <= index < len(self.desktop_windows):
+            self.selected_window = self.desktop_windows[index]
+            self.logger.info(f"Selected window: {self.selected_window.label()}")
+            self.emit_state()
+
+    def catch_desktop_target(self) -> None:
+        self._run(self._catch_desktop_target)
+
+    def _catch_desktop_target(self) -> None:
+        self.logger.info("Desktop catch armed. Hover over the target object and press F9.")
+        try:
+            self.current_target = self.desktop.catch_under_mouse_f9(self.selected_window)
+            self.logger.info("Desktop UIA target captured.")
+            self.queue.put(("captured", self.current_target))
+        except Exception as exc:
+            self.logger.error(str(exc))
+
+    def detect_terminal_adapter(self) -> None:
+        self._run(self._detect_terminal_adapter)
+
+    def _detect_terminal_adapter(self) -> None:
+        detection, details = self.terminal.detect(self.selected_window, self.session_file, self.root)
+        self.adapter_name = detection.adapter
+        self.terminal_detection_done = True
+        self.logger.info(f"Terminal adapter detected: {detection.adapter} ({detection.confidence})")
+        self.queue.put(("terminal_detection", {"detection": detection.to_dict(), "details": details}))
+        self.emit_state()
+
+    def select_session_file(self, path: str) -> None:
+        self.session_file = path
+        self.logger.info(f"Selected session file: {path}")
+        self.emit_state()
+
+    def read_terminal_preview(self) -> None:
+        self.queue.put(("terminal_preview", self.terminal.read_screen_preview()))
+        self.logger.info("Terminal screen preview requested.")
+
+    def catch_terminal_target(self, action: str, metadata: dict) -> None:
+        self.current_target = self.terminal.build_target(action, metadata)
+        self.logger.info("Terminal target details captured.")
+        self.queue.put(("captured", self.current_target))
+
+    def add_step(self, action: str, sample_input: str = "") -> None:
+        try:
+            step = self.step_manager.add_step(action, self.current_target, sample_input)
+            self.logger.info(f"Added step {step.step_number}: {action}.")
+            self.emit_state()
+        except Exception as exc:
+            self.logger.error(str(exc))
+
+    def delete_step(self, index: int) -> None:
+        self.step_manager.delete_step(index)
+        self.logger.info("Deleted selected step.")
+        self.emit_state()
+
+    def move_step_up(self, index: int) -> int:
+        new_index = self.step_manager.move_up(index)
+        self.emit_state()
+        return new_index
+
+    def move_step_down(self, index: int) -> int:
+        new_index = self.step_manager.move_down(index)
+        self.emit_state()
+        return new_index
+
+    def test_selected_step(self, index: int) -> None:
+        step = self.step_manager.get(index)
+        if not step:
+            self.logger.warn("No selected step to test.")
+            return
+        self._run(lambda: self._test_step(step))
+
+    def test_full_handshake(self) -> None:
+        self._run(self._test_full_handshake)
+
+    def _test_full_handshake(self) -> None:
+        if not self.step_manager.steps:
+            self.logger.warn("No steps to test.")
+            return
+        for step in self.step_manager.steps:
+            self._test_step(step, emit=False)
+        self.emit_state()
+        recipe = self._recipe()
+        passed = sum(1 for step in recipe.steps if step.status == "Passed")
+        failed = sum(1 for step in recipe.steps if step.status == "Failed")
+        review = sum(1 for step in recipe.steps if step.status == "Needs Manual Review")
+        if recipe.status == "Passed":
+            self.logger.info("Full handshake passed.")
+            self.queue.put(("full_passed", {"target_type": recipe.target_type, "steps": len(recipe.steps), "adapter": recipe.adapter}))
+        else:
+            self.logger.warn("Full handshake completed with issues.")
+            self.queue.put(("full_issues", {"passed": passed, "failed": failed, "review": review}))
+
+    def _test_step(self, step: HandshakeStep, emit: bool = True) -> None:
+        if step.action in {"Click", "Type"}:
+            self._countdown(step.action)
+        status, message, extracted = self._dispatch_step_test(step)
+        self.step_manager.update_status(step, status, message, extracted)
+        self.logger.info(f"Step {step.step_number} {step.action}: {status} - {message}")
+        if emit:
+            self.emit_state()
+
+    def _dispatch_step_test(self, step: HandshakeStep) -> tuple[str, str, str]:
+        if self.target_type == "Website":
+            return self.website.test_step(step.action, step.captured_target, step.sample_input)
+        if self.target_type == "Desktop Application":
+            return self.desktop.test_step(step.action, step.captured_target, step.sample_input)
+        metadata = step.captured_target.metadata if step.captured_target else {}
+        return self.terminal.test_step(step.action, metadata, step.sample_input)
+
+    def _countdown(self, action: str) -> None:
+        for second in range(5, 0, -1):
+            self.logger.info(f"{action} test in {second}...")
+            time.sleep(1)
+        self.logger.info("Running test now...")
+
+    def export_outputs(self) -> None:
+        self._run(self._export_outputs)
+
+    def _export_outputs(self) -> None:
+        recipe = self._recipe()
+        folder = export_handshake(recipe)
+        self.export_folder = folder
+        self.logger.info(f"Exported handshake outputs: {folder}")
+        self.queue.put(("exported", str(folder)))
+
+    def open_export_folder(self) -> None:
+        if self.export_folder:
+            os.startfile(self.export_folder)
+
+    def _recipe(self) -> HandshakeRecipe:
+        recipe = HandshakeRecipe(
+            target_type=self.target_type,
+            adapter=self.adapter_name,
+            status=self.step_manager.overall_status(),
+            steps=self.step_manager.steps,
+            notes=[self.website_url] if self.target_type == "Website" and self.website_url else [],
+        )
+        return recipe
+
+    def emit_state(self) -> None:
+        self.queue.put(("state", self._recipe()))
+
+    def _run(self, work: Callable[[], None]) -> None:
         threading.Thread(target=work, daemon=True).start()
-
-    def light_discovery(self) -> None:
-        self.logger.info("Starting light discovery scan.")
-        self.processes = scan_processes()
-        likely_processes = likely_emulator_processes(self.processes)
-        for proc in likely_processes:
-            self.logger.info(f"Found emulator process: {proc.get('name')} ({proc.get('pid')})")
-        self.windows = scan_windows(self.processes)
-        self.profiles = scan_profiles()
-        selected = next((item for item in self.windows if is_likely_window(item)), self.windows[0] if self.windows else TargetWindow())
-        selected_profile = self.profiles[0] if self.profiles else SessionProfile()
-        self.scan_result.selected_window = selected
-        self.scan_result.selected_profile = selected_profile
-        self._apply_profile_guess(selected_profile)
-        self._apply_launcher_guess(likely_processes, selected)
-        self.queue.put(("discovery", None))
-        self.logger.info(f"Visible windows found: {len(self.windows)}")
-        self.logger.info(f"Session/profile files found: {len(self.profiles)}")
-
-    def refresh_windows(self) -> None:
-        self.run_thread(self._refresh_windows)
-
-    def _refresh_windows(self) -> None:
-        self.processes = scan_processes()
-        self.windows = scan_windows(self.processes)
-        self.queue.put(("windows", None))
-        self.logger.info(f"Window list refreshed: {len(self.windows)} visible windows.")
-
-    def select_profile(self, path: str) -> None:
-        self.scan_result.selected_profile = guess_profile(path)
-        self._apply_profile_guess(self.scan_result.selected_profile)
-        self.queue.put(("result", self.scan_result))
-        self.logger.info(f"Selected profile: {path}")
-
-    def select_window_by_index(self, index: int) -> None:
-        if 0 <= index < len(self.windows):
-            self.scan_result.selected_window = self.windows[index]
-            self.queue.put(("result", self.scan_result))
-            self.logger.info(f"Selected window: {self.windows[index].label()}")
-
-    def start_scan(self) -> None:
-        self.run_thread(self._start_scan)
-
-    def _start_scan(self) -> None:
-        self.logger.info("Starting deeper handshake scan.")
-        window = self.scan_result.selected_window
-        profile = self.scan_result.selected_profile
-        self.found_dlls = probe_hllapi_dlls(window.exe_path, profile.path, window.pid)
-        adapters = [
-            test_win32(window),
-            test_uia(window),
-            test_hllapi(self.found_dlls),
-            AdapterResult("COM / ActiveX", "Unavailable", "low", "Future placeholder for Reflection automation."),
-        ]
-        self.scan_result.adapters = adapters
-        self.scan_result.best_adapter = recommend_best_adapter(self.scan_result)
-        self.queue.put(("result", self.scan_result))
-        self.logger.info(f"Known HLLAPI DLL candidates found: {len(self.found_dlls)}")
-        self.logger.info(f"Recommended adapter: {self.scan_result.best_adapter}")
-
-    def test_uia(self) -> None:
-        self.run_thread(lambda: self._single_adapter(test_uia(self.scan_result.selected_window)))
-
-    def probe_dlls(self) -> None:
-        self.run_thread(self._probe_dlls)
-
-    def _probe_dlls(self) -> None:
-        window = self.scan_result.selected_window
-        profile = self.scan_result.selected_profile
-        self.found_dlls = probe_hllapi_dlls(window.exe_path, profile.path, window.pid)
-        self._single_adapter(test_hllapi(self.found_dlls))
-
-    def test_clipboard(self) -> None:
-        self.run_thread(lambda: self._single_adapter(test_clipboard(self.scan_result.selected_window, self.root)))
-
-    def _single_adapter(self, adapter: AdapterResult) -> None:
-        existing = [item for item in self.scan_result.adapters if item.name != adapter.name]
-        existing.append(adapter)
-        self.scan_result.adapters = existing
-        self.scan_result.best_adapter = recommend_best_adapter(self.scan_result)
-        self.queue.put(("result", self.scan_result))
-        self.logger.info(f"{adapter.name}: {adapter.status} - {adapter.notes}")
-
-    def export_report(self) -> None:
-        Path("output/reports").mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now()
-        path = Path("output/reports") / f"monolith_report_{timestamp:%Y%m%d_%H%M%S}.json"
-        payload = self.scan_result.to_dict()
-        payload["timestamp"] = timestamp.isoformat()
-        payload["logs"] = self.logger.lines
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        self.logger.info(f"Exported report: {path}")
-        self.queue.put(("exported", str(path)))
-
-    def _apply_profile_guess(self, profile: SessionProfile) -> None:
-        if profile.path:
-            self.scan_result.product_guess = profile.product_guess
-            self.scan_result.backend_guess = profile.backend_guess
-
-    def _apply_launcher_guess(self, likely_processes: list[dict], selected: TargetWindow) -> None:
-        name = (selected.process_name or "").lower()
-        if name == "mystyle.exe" or any((proc.get("name") or "").lower() == "mystyle.exe" for proc in likely_processes):
-            self.scan_result.launcher_guess = "MyStyle / Internal Wrapper"
-        elif selected.process_name:
-            self.scan_result.launcher_guess = selected.process_name
-        elif likely_processes:
-            self.scan_result.launcher_guess = likely_processes[0].get("name") or "Unknown"
 
     def _queue_log(self, line: str) -> None:
         self.queue.put(("log", line))
@@ -154,31 +248,7 @@ class MonolithController:
                 event, payload = self.queue.get_nowait()
             except queue.Empty:
                 break
-            if event == "log":
-                self.callbacks["log"](payload)
-            elif event in {"discovery", "windows"}:
-                self.callbacks["windows"](self.windows, self.scan_result.selected_window)
-                self.callbacks["profiles"](self.profiles, self.scan_result.selected_profile)
-                self.callbacks["result"](self.scan_result)
-            elif event == "result":
-                self.callbacks["result"](payload)
-            elif event == "exported":
-                self.callbacks["exported"](payload)
+            callback = self.callbacks.get(event)
+            if callback:
+                callback(payload)
         self.root.after(100, self._drain_queue)
-
-
-def recommend_best_adapter(scan_result: ScanResult) -> str:
-    names = [
-        adapter.name
-        for adapter in scan_result.adapters
-        if adapter.status.lower() in ["available", "candidate"]
-    ]
-    if "HLLAPI / EHLLAPI" in names:
-        return "HLLAPI / EHLLAPI"
-    if "COM / ActiveX" in names:
-        return "COM / ActiveX"
-    if "UI Automation" in names:
-        return "UI Automation"
-    if "Clipboard Copy" in names:
-        return "Clipboard Copy"
-    return "OCR / Image Fallback"

@@ -1,8 +1,24 @@
 # Monolith
 
-Monolith is a Windows GUI tester for legacy terminal/emulator handshake discovery.
+Monolith V2 is a Windows Tkinter desktop tool for building a formal automation handshake before a full automation project starts.
 
-It detects likely emulator windows, session/profile files, known processes, and HLLAPI/EHLLAPI DLL candidates, then recommends the safest available adapter. Version 1 is read-only by default and does not submit data, automate login, patch DLLs, inject into memory, or press Enter.
+It supports three target types:
+
+- Terminal Emulator
+- Website
+- Desktop Application
+
+The app helps capture and test three basic actions:
+
+- Click
+- Type/Input
+- Extract Text
+
+Exports are written to `output/handshakes/YYYYMMDD_HHMMSS/` and include:
+
+- `handshake_recipe.json`
+- `handshake_summary.md`
+- `generated_handshake.py`
 
 ## Download
 
@@ -18,6 +34,7 @@ GitHub Pages landing page:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+python -m playwright install chromium
 python main.py
 ```
 
@@ -35,4 +52,4 @@ dist/Monolith.exe
 
 ## Safety
 
-Monolith v1 is a tester/discovery layer only. Clipboard testing runs only when the user clicks **Test Clipboard** and confirms the prompt.
+Monolith V2 is a tester/handshake builder only. It does not add OCR, screenshot capture, credential storage, process injection, memory patching, DLL patching, or production bot execution.

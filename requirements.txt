@@ -3,3 +3,4 @@ pywin32
 psutil
 pyperclip
 pillow
+playwright
