@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
@@ -98,12 +99,17 @@ CATCH_SCRIPT = r"""
 
 class WebsitePlaywrightAdapter:
     def __init__(self) -> None:
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="monolith-playwright")
         self.playwright = None
         self.browser = None
         self.page = None
         self.current_url = ""
+        self.stop_event = threading.Event()
 
     def open_browser(self, url: str) -> tuple[bool, str]:
+        return self.executor.submit(self._open_browser, url).result()
+
+    def _open_browser(self, url: str) -> tuple[bool, str]:
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:
@@ -122,8 +128,12 @@ class WebsitePlaywrightAdapter:
             return False, f"Browser could not launch/open URL: {exc}"
 
     def start_catch_mode(self, timeout: int = 60) -> CapturedTarget:
+        return self.executor.submit(self._start_catch_mode, timeout).result()
+
+    def _start_catch_mode(self, timeout: int = 60) -> CapturedTarget:
         if self.page is None:
             raise RuntimeError("Open a browser before starting catch mode.")
+        self.stop_event.clear()
         captured: dict = {}
         event = threading.Event()
 
@@ -137,14 +147,20 @@ class WebsitePlaywrightAdapter:
             pass
         self.page.evaluate(CATCH_SCRIPT)
         deadline = time.time() + timeout
-        while time.time() < deadline and not event.is_set():
+        while time.time() < deadline and not event.is_set() and not self.stop_event.is_set():
             self.page.wait_for_timeout(100)
         if not event.is_set():
-            self.stop_catch_mode()
+            self._stop_catch_mode()
+            if self.stop_event.is_set():
+                raise RuntimeError("Website catch mode was stopped.")
             raise TimeoutError("Website catch mode timed out.")
         return CapturedTarget("Website", "Playwright", captured)
 
     def stop_catch_mode(self) -> None:
+        self.stop_event.set()
+        self.executor.submit(self._stop_catch_mode)
+
+    def _stop_catch_mode(self) -> None:
         if self.page is not None:
             try:
                 self.page.evaluate("window.__monolithStopCatch && window.__monolithStopCatch()")
@@ -152,6 +168,9 @@ class WebsitePlaywrightAdapter:
                 pass
 
     def test_step(self, action: str, target: CapturedTarget | None, sample_input: str = "") -> tuple[str, str, str]:
+        return self.executor.submit(self._test_step, action, target, sample_input).result()
+
+    def _test_step(self, action: str, target: CapturedTarget | None, sample_input: str = "") -> tuple[str, str, str]:
         if self.page is None:
             return "Failed", "Browser is not open.", ""
         if not target:

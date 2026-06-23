@@ -17,7 +17,7 @@ class CapturedTarget:
 
     def label(self) -> str:
         metadata = self.metadata
-        for key in ("text", "name", "automation_id", "css_selector", "terminal_action", "description"):
+        for key in ("description", "text", "name", "automation_id", "css_selector", "terminal_action"):
             value = metadata.get(key)
             if value:
                 return str(value)

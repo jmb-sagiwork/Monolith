@@ -132,7 +132,7 @@ class MonolithController:
 
     def catch_terminal_target(self, action: str, metadata: dict) -> None:
         self.current_target = self.terminal.build_target(action, metadata)
-        self.logger.info("Terminal target details captured.")
+        self.logger.info(f"Manual terminal target saved: {self.current_target.label()}.")
         self.queue.put(("captured", self.current_target))
 
     def add_step(self, action: str, sample_input: str = "") -> None:

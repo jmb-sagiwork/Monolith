@@ -223,14 +223,33 @@ class MonolithApp:
             self.controller.select_session_file(path)
 
     def _capture_terminal(self) -> None:
+        action = self.action_var.get()
+        row = self.row_var.get().strip()
+        column = self.column_var.get().strip()
+        length = self.length_var.get().strip()
+        terminal_action = self.terminal_action_var.get()
+        if action == "Click":
+            description = f"Terminal action: {terminal_action}"
+        elif action == "Type":
+            if not row or not column:
+                messagebox.showwarning("Missing Terminal Position", "Enter a row and column before saving a Type target.")
+                return
+            description = f"Input at row {row}, column {column}"
+        else:
+            if not row or not column or not length:
+                messagebox.showwarning("Missing Terminal Region", "Enter row, column, and length before saving an Extract Text target.")
+                return
+            description = f"Extract row {row}, column {column}, length {length}"
         metadata = {
-            "terminal_action": self.terminal_action_var.get(),
-            "row": self.row_var.get(),
-            "column": self.column_var.get(),
-            "length": self.length_var.get(),
+            "description": description,
+            "row": row,
+            "column": column,
+            "length": length,
             "session_file": self.session_file_var.get() if self.session_file_var.get() != "None" else "",
         }
-        self.controller.catch_terminal_target(self.action_var.get(), metadata)
+        if action == "Click":
+            metadata["terminal_action"] = terminal_action
+        self.controller.catch_terminal_target(action, metadata)
 
     def _catch_target(self) -> None:
         target_type = self.target_type_var.get()
