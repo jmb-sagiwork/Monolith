@@ -6,3 +6,4 @@ build/
 output/logs/*.log
 output/reports/*.json
 output/handshakes/*/
+dist/output/
