@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from monolith.adapters.clipboard_adapter import clipboard_available
 from monolith.adapters.hllapi_detector import detect_hllapi
 from monolith.adapters.win32_adapter import inspect_window
@@ -61,6 +63,73 @@ class TerminalAdapter:
             return "Failed", "Missing row, column, or length for terminal extraction.", ""
         if action == "Type":
             if metadata.get("row") and metadata.get("column") and sample_input:
-                return "Needs Manual Review", "Terminal input position and sample text saved for developer validation.", ""
+                ok, message = self._focus_terminal(metadata)
+                if not ok:
+                    return "Failed", message, ""
+                sent, send_message = self._send_text(sample_input)
+                if sent:
+                    return (
+                        "Passed",
+                        "Typed sample input into the focused terminal window. "
+                        "Row/column were saved for the recipe but not enforced without a full HLLAPI cursor-position implementation.",
+                        "",
+                    )
+                return "Failed", send_message, ""
             return "Failed", "Missing terminal row/column or sample input.", ""
-        return "Needs Manual Review", f"Terminal action saved: {metadata.get('terminal_action', 'Enter')}", ""
+        ok, message = self._focus_terminal(metadata)
+        if not ok:
+            return "Failed", message, ""
+        sent, send_message = self._send_terminal_action(metadata.get("terminal_action", "Enter"))
+        if sent:
+            return "Passed", f"Sent terminal action: {metadata.get('terminal_action', 'Enter')}.", ""
+        return "Failed", send_message, ""
+
+    def _focus_terminal(self, metadata: dict) -> tuple[bool, str]:
+        hwnd = (metadata.get("window") or {}).get("hwnd")
+        if not hwnd:
+            return False, "No terminal window handle was saved with this step. Click Refresh Windows, save the target again, then retest."
+        try:
+            import win32con
+            import win32gui
+
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.25)
+            return True, "Terminal window focused."
+        except Exception as exc:
+            return False, f"Could not focus terminal window: {exc}"
+
+    def _send_text(self, text: str) -> tuple[bool, str]:
+        try:
+            from pywinauto.keyboard import send_keys
+
+            send_keys(text, with_spaces=True, pause=0.02)
+            return True, "Text sent."
+        except Exception as exc:
+            return False, f"Could not type into terminal window: {exc}"
+
+    def _send_terminal_action(self, action: str) -> tuple[bool, str]:
+        key_map = {
+            "Enter": "{ENTER}",
+            "Tab": "{TAB}",
+            "PF1": "{F1}",
+            "PF2": "{F2}",
+            "PF3": "{F3}",
+            "PF4": "{F4}",
+            "PF5": "{F5}",
+            "PF6": "{F6}",
+            "PF7": "{F7}",
+            "PF8": "{F8}",
+            "PF9": "{F9}",
+            "PF10": "{F10}",
+            "PF11": "{F11}",
+            "PF12": "{F12}",
+        }
+        try:
+            from pywinauto.keyboard import send_keys
+
+            send_keys(key_map.get(action, "{ENTER}"), pause=0.02)
+            return True, "Terminal action sent."
+        except Exception as exc:
+            return False, f"Could not send terminal action: {exc}"

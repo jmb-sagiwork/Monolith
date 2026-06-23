@@ -131,6 +131,8 @@ class MonolithController:
         self.logger.info("Terminal screen preview requested.")
 
     def catch_terminal_target(self, action: str, metadata: dict) -> None:
+        if self.selected_window:
+            metadata["window"] = self.selected_window.to_dict()
         self.current_target = self.terminal.build_target(action, metadata)
         self.logger.info(f"Manual terminal target saved: {self.current_target.label()}.")
         self.queue.put(("captured", self.current_target))
